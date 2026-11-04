@@ -77,6 +77,22 @@ input[type=text]{width:100%;padding:12px;border-radius:12px;border:1px solid var
 #acceso{position:fixed;inset:0;background:var(--fondo);z-index:40;display:none;padding:70px 24px;max-width:500px;margin:0 auto}
 #acceso h1{font-size:26px}
 #aError{color:var(--rojo);font-weight:600}
+.item.tachado{opacity:.55}
+.item.tachado .nom{text-decoration:line-through}
+.item.tachado img,.item.tachado .emo{filter:grayscale(1)}
+.check.on{background:var(--verde);color:#fff}
+.sep{font-size:12px;color:var(--gris);margin:12px 2px 6px;text-transform:uppercase;letter-spacing:.04em}
+.progreso{height:6px;border-radius:3px;background:var(--borde);margin:-4px 0 12px;overflow:hidden}
+.progreso div{height:100%;background:var(--verde);transition:width .2s}
+.compra{background:var(--tarjeta);border:1px solid var(--borde);border-radius:16px;margin-bottom:12px;overflow:hidden}
+.compra summary{list-style:none;padding:12px;display:flex;align-items:center;gap:12px;cursor:pointer}
+.compra summary::-webkit-details-marker{display:none}
+.compra .fechaBox{width:52px;text-align:center;flex-shrink:0;background:var(--verde2);color:var(--verde);border-radius:12px;padding:6px 0;font-weight:700;line-height:1.1}
+.compra .fechaBox .d{font-size:20px}
+.compra .fechaBox .m{font-size:11px;text-transform:uppercase}
+.compra .detalle{padding:0 12px 6px}
+.compra[open] .flecha{transform:rotate(90deg)}
+.compra .flecha{transition:transform .15s}
 </style>
 </head>
 <body>
@@ -112,12 +128,15 @@ input[type=text]{width:100%;padding:12px;border-radius:12px;border:1px solid var
     <input class="buscar" id="aBuscar" type="search" placeholder="🔍 Buscar alimento para añadir...">
     <div id="anadir"></div>
   </section>
+
+  <section id="vHist" class="vista"><div id="historial"></div></section>
 </main>
 
 <nav>
   <button data-v="vListas" class="activo"><span class="i">📝</span>Listas<span class="badge" id="badge" hidden></span></button>
   <button data-v="vBase"><span class="i">📦</span>Alimentos</button>
   <button data-v="vAnadir"><span class="i">➕</span>Añadir a lista</button>
+  <button data-v="vHist"><span class="i">🕘</span>Historial</button>
 </nav>
 
 <div id="toast"><span id="tTexto"></span><button id="tBoton" hidden>Deshacer</button></div>
@@ -219,20 +238,82 @@ function pintarListas() {
   $('badge').hidden = !en.length;
   $('badge').textContent = en.length;
   let h = '';
+  const fila = p => `<div class="item ${p.enCarro ? 'tachado' : ''}" data-cant="${p.id}">${fotoHtml(p)}
+      <div class="info"><div class="nom">${esc(p.nombre)}</div>
+      <div class="sub">${p.anadidoPor ? 'Añadido por ' + esc(p.anadidoPor) : ''}</div></div>
+      <div class="uds">×${p.cantidad}</div>
+      <button class="check ${p.enCarro ? 'on' : ''}" data-carro="${p.id}" aria-label="Tachar">✓</button></div>`;
   ['Mercadona', 'Otro'].forEach(t => {
     const g = en.filter(p => p.tienda === t).sort(porNombre);
     if (t === 'Otro' && !g.length) return;
-    h += `<div class="bloque ${t === 'Otro' ? 'otro' : ''}"><h2 class="tit">${TIENDAS[t].icono} ${TIENDAS[t].nombre} <span>${g.length}</span></h2>`;
-    h += g.length
-      ? g.map(p => `<div class="item" data-cant="${p.id}">${fotoHtml(p)}
-          <div class="info"><div class="nom">${esc(p.nombre)}</div>
-          <div class="sub">${p.anadidoPor ? 'Añadido por ' + esc(p.anadidoPor) : ''}</div></div>
-          <div class="uds">×${p.cantidad}</div>
-          <button class="check" data-comprar="${p.id}">✓</button></div>`).join('')
-      : '<p class="vac">🎉 No falta nada. Añade cosas desde <b>Añadir a lista</b>.</p>';
+    const pendientes = g.filter(p => !p.enCarro), tachados = g.filter(p => p.enCarro);
+    h += `<div class="bloque ${t === 'Otro' ? 'otro' : ''}"><h2 class="tit">${TIENDAS[t].icono} ${TIENDAS[t].nombre} <span>${tachados.length ? tachados.length + '/' + g.length + ' en el carro' : g.length}</span></h2>`;
+    if (!g.length) {
+      h += '<p class="vac">🎉 No falta nada. Añade cosas desde <b>Añadir a lista</b>.</p>';
+    } else {
+      if (tachados.length) h += `<div class="progreso"><div style="width:${Math.round(tachados.length / g.length * 100)}%"></div></div>`;
+      h += pendientes.map(fila).join('');
+      if (tachados.length) h += `<div class="sep">En el carro (${tachados.length})</div>` + tachados.map(fila).join('');
+      h += `<button class="btn" data-terminar="${t}" ${tachados.length ? '' : 'disabled'}>✅ Terminar compra${tachados.length ? ' (' + tachados.length + ')' : ''}</button>`;
+      if (!tachados.length) h += '<p class="vac" style="text-align:center;margin-top:6px">Pulsa ✓ en lo que metas al carro</p>';
+    }
     h += '</div>';
   });
   $('listas').innerHTML = h;
+}
+
+// ---------- Historial ----------
+let historial = null;
+async function cargarHistorial() {
+  if (!historial) $('historial').innerHTML = '<div class="vacio"><div>⏳</div><p>Cargando historial…</p></div>';
+  try {
+    const r = await pedir(API_URL + '?accion=historial&codigo=' + encodeURIComponent(cfg.codigo));
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    historial = d.historial;
+    pintarHistorial();
+  } catch (e) { $('historial').innerHTML = `<div class="vacio"><div>⚠️</div><p>${esc(e.message)}</p></div>`; }
+}
+
+function pintarHistorial() {
+  if (!historial.length) {
+    $('historial').innerHTML = '<div class="vacio"><div>🕘</div><p>Aún no hay compras.<br>Cuando pulses <b>Terminar compra</b> aparecerán aquí.</p></div>';
+    return;
+  }
+  const meses = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+  $('historial').innerHTML = historial.map(c => {
+    const f = new Date(c.fecha);
+    const hora = f.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    const dia = f.toLocaleDateString('es-ES', { weekday: 'long' });
+    const uni = c.productos.reduce((s, p) => s + p.cantidad, 0);
+    return `<details class="compra">
+      <summary>
+        <div class="fechaBox"><div class="d">${f.getDate()}</div><div class="m">${meses[f.getMonth()]}</div></div>
+        <div class="info" style="flex:1;min-width:0">
+          <div class="nom" style="font-weight:600">${TIENDAS[c.tienda].icono} ${TIENDAS[c.tienda].nombre}</div>
+          <div class="sub" style="font-size:12px;color:var(--gris);margin-top:3px">${dia} ${hora}${c.comprador ? ' · por ' + esc(c.comprador) : ''} · ${c.productos.length} productos (${uni} uds)</div>
+        </div>
+        <span class="flecha">›</span>
+      </summary>
+      <div class="detalle">${c.productos.sort(porNombre).map(p => `<div class="item" style="cursor:default">${fotoHtml(p)}
+        <div class="info"><div class="nom">${esc(p.nombre)}</div></div><div class="uds">×${p.cantidad}</div></div>`).join('')}</div>
+    </details>`;
+  }).join('');
+}
+
+async function terminarCompra(t) {
+  const g = productos.filter(p => p.enLista && p.tienda === t);
+  const tachados = g.filter(p => p.enCarro).length, pendientes = g.length - tachados;
+  let msg = `¿Terminar la compra en ${TIENDAS[t].nombre}?\n\n✓ ${tachados} producto(s) tachado(s) pasarán al historial.`;
+  if (pendientes) msg += `\n• ${pendientes} sin tachar seguirán en la lista para la próxima vez.`;
+  if (!confirm(msg)) return;
+  const btn = document.querySelector(`[data-terminar="${t}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando compra…'; }
+  try {
+    await enviar({ accion: 'terminar', tienda: t });
+    historial = null;
+    toast(`✅ Compra guardada: ${tachados} producto(s)${pendientes ? ` · quedan ${pendientes} pendientes` : ''}`);
+  } catch (e) { toast('⚠️ ' + e.message); pintarListas(); }
 }
 
 function filtrar(q) {
@@ -304,15 +385,15 @@ function accionCantidad(acc) {
   const n = numCant();
   const antes = p.cantidad;
   if (acc === 'poner') {
-    p.enLista = true; p.cantidad = n; p.anadidoPor = cfg.nombre;
+    p.enLista = true; p.cantidad = n; p.anadidoPor = cfg.nombre; p.enCarro = false;
     operar({ accion: 'poner', id: p.id, cantidad: n });
     toast(`🛒 ${p.nombre}: ${uds(n)} en ${TIENDAS[p.tienda].nombre}`);
   } else if (acc === 'sumar') {
-    p.enLista = true; p.cantidad = antes + n; p.anadidoPor = cfg.nombre;
+    p.enLista = true; p.cantidad = antes + n; p.anadidoPor = cfg.nombre; p.enCarro = false;
     operar({ accion: 'sumar', id: p.id, cantidad: n });
     toast(`🛒 ${p.nombre}: ahora ${uds(p.cantidad)}`);
   } else if (acc === 'quitar') {
-    p.enLista = false; p.cantidad = 0;
+    p.enLista = false; p.cantidad = 0; p.enCarro = false;
     operar({ accion: 'quitar', id: p.id });
     toast(`${p.nombre} quitado de la lista`, () => { p.enLista = true; p.cantidad = antes; operar({ accion: 'poner', id: p.id, cantidad: antes }); });
   }
@@ -415,6 +496,7 @@ function irA(v) {
   document.querySelectorAll('.vista').forEach(s => s.classList.toggle('activa', s.id === v));
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('activo', b.dataset.v === v));
   window.scrollTo(0, 0);
+  if (v === 'vHist') cargarHistorial();
 }
 
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => irA(b.dataset.v));
@@ -432,15 +514,15 @@ document.addEventListener('click', e => {
   if (t.closest('[data-cerrar]')) { cerrarModales(); return; }
   const acc = t.closest('[data-acc]');
   if (acc) { accionCantidad(acc.dataset.acc); return; }
-  const comprar = t.closest('[data-comprar]');
-  if (comprar) {
-    const p = productos.find(x => x.id === comprar.dataset.comprar);
-    const antes = p.cantidad;
-    p.enLista = false; p.cantidad = 0;
-    operar({ accion: 'quitar', id: p.id });
-    toast('✓ ' + p.nombre + ' comprado', () => { p.enLista = true; p.cantidad = antes; operar({ accion: 'poner', id: p.id, cantidad: antes }); });
+  const carro = t.closest('[data-carro]');
+  if (carro) {
+    const p = productos.find(x => x.id === carro.dataset.carro);
+    p.enCarro = !p.enCarro;
+    operar({ accion: 'carro', id: p.id, valor: p.enCarro });
     return;
   }
+  const term = t.closest('[data-terminar]');
+  if (term) { if (!term.disabled) terminarCompra(term.dataset.terminar); return; }
   const cant = t.closest('[data-cant]');
   if (cant) { abrirCantidad(cant.dataset.cant); return; }
   const sel = t.closest('[data-sel]');
