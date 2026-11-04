@@ -85,9 +85,9 @@ input[type=text]{width:100%;padding:12px;border-radius:12px;border:1px solid var
   <h1>🛒 Lista de la compra</h1>
   <p>Introduce el código familiar y tu nombre.</p>
   <label class="t">Código familiar</label>
-  <input type="text" id="aCodigo" autocomplete="off">
+  <input type="text" id="aCodigo" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
   <label class="t">Tu nombre</label>
-  <input type="text" id="aNombre" placeholder="Ej: Asier">
+  <input type="text" id="aNombre" placeholder="Ej: Asier" autocapitalize="words">
   <button class="btn" id="aEntrar">Entrar</button>
   <p id="aError"></p>
 </div>
@@ -166,10 +166,22 @@ const uds = n => n + (n === 1 ? ' unidad' : ' unidades');
 let productos = [], cfg = null, selId = null, editId = null, fotoForm = null, quitarFoto = false, tras = null;
 try { cfg = JSON.parse(localStorage.getItem('compraCfg')); } catch (e) {}
 
+// fetch con límite de tiempo, para que nunca se quede colgado
+async function pedir(url, opciones = {}, segundos = 30) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), segundos * 1000);
+  try {
+    return await fetch(url, { ...opciones, signal: ctrl.signal, redirect: 'follow', cache: 'no-store' });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('El servidor tarda demasiado. Revisa la conexión e inténtalo otra vez.');
+    throw new Error('Sin conexión con el servidor (' + e.message + ')');
+  } finally { clearTimeout(t); }
+}
+
 async function cargar() {
   if (!cfg) return;
   try {
-    const r = await fetch(API_URL + '?codigo=' + encodeURIComponent(cfg.codigo));
+    const r = await pedir(API_URL + '?codigo=' + encodeURIComponent(cfg.codigo));
     const d = await r.json();
     if (!d.ok) throw new Error(d.error);
     productos = d.productos;
@@ -178,7 +190,7 @@ async function cargar() {
 }
 
 async function enviar(datos, aplicar = true) {
-  const r = await fetch(API_URL, {
+  const r = await pedir(API_URL, {
     method: 'POST',
     body: JSON.stringify({ ...datos, codigo: cfg.codigo, usuario: cfg.nombre })
   });
@@ -442,18 +454,22 @@ document.addEventListener('click', e => {
 $('aEntrar').onclick = async () => {
   const codigo = $('aCodigo').value.trim(), nombre = $('aNombre').value.trim();
   if (!codigo || !nombre) { $('aError').textContent = 'Rellena los dos campos'; return; }
-  $('aEntrar').disabled = true; $('aError').textContent = '';
+  const btn = $('aEntrar');
+  btn.disabled = true; btn.textContent = 'Conectando… (puede tardar unos segundos)';
+  $('aError').textContent = '';
   try {
-    const r = await fetch(API_URL + '?codigo=' + encodeURIComponent(codigo));
-    const d = await r.json();
-    if (!d.ok) throw new Error(d.error);
+    const r = await pedir(API_URL + '?codigo=' + encodeURIComponent(codigo));
+    const texto = await r.text();
+    let d;
+    try { d = JSON.parse(texto); } catch (e) { throw new Error('Respuesta inesperada del servidor'); }
+    if (!d.ok) throw new Error(d.error === 'Código incorrecto' ? 'Código incorrecto (ojo con mayúsculas y minúsculas)' : d.error);
     cfg = { codigo, nombre };
     try { localStorage.setItem('compraCfg', JSON.stringify(cfg)); } catch (e) {}
     productos = d.productos;
     $('acceso').style.display = 'none';
     pintar();
   } catch (err) { $('aError').textContent = '⚠️ ' + err.message; }
-  $('aEntrar').disabled = false;
+  btn.disabled = false; btn.textContent = 'Entrar';
 };
 
 if (!cfg) { $('acceso').style.display = 'block'; } else { pintar(); cargar(); }
