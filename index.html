@@ -107,7 +107,9 @@ input[type=text]{width:100%;padding:12px;border-radius:12px;border:1px solid var
   <input type="text" id="aNombre" placeholder="Ej: Asier" autocapitalize="words">
   <button class="btn" id="aEntrar">Entrar</button>
   <p id="aError"></p>
-  <p style="color:var(--gris);font-size:12px;margin-top:30px">Versión 7</p>
+  <button class="btn gris" id="aDiag" type="button">🔧 Probar conexión</button>
+  <pre id="aDiagRes" style="white-space:pre-wrap;font-size:13px;color:var(--texto);font-family:inherit"></pre>
+  <p style="color:var(--gris);font-size:12px;margin-top:20px">Versión 8</p>
 </div>
 
 <header>
@@ -619,6 +621,32 @@ $('aEntrar').onclick = async () => {
     pintar();
   } catch (err) { $('aError').textContent = '⚠️ ' + err.message; }
   btn.disabled = false; btn.textContent = 'Entrar';
+};
+
+// ---------- Diagnóstico de conexión ----------
+$('aDiag').onclick = async () => {
+  const res = $('aDiagRes');
+  const conTiempo = (url, opc = {}) => { const c = new AbortController(); setTimeout(() => c.abort(), 10000); return fetch(url, { ...opc, signal: c.signal }); };
+  const prueba = async (nombre, fn) => {
+    const t0 = Date.now();
+    try { const r = await fn(); return '✅ ' + nombre + ': ' + r + ' (' + (Date.now() - t0) + ' ms)'; }
+    catch (e) { return '❌ ' + nombre + ': ' + (e.name === 'AbortError' ? 'tiempo agotado' : e.message) + ' (' + (Date.now() - t0) + ' ms)'; }
+  };
+  const modoApp = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+  const lineas = ['Modo app: ' + (modoApp ? 'sí' : 'no') + ' · En línea: ' + (navigator.onLine ? 'sí' : 'no'), 'Probando…'];
+  res.textContent = lineas.join('\n');
+  lineas.pop();
+  const pruebas = [
+    ['Misma web', async () => { const r = await conTiempo(location.pathname + '?d=' + Date.now(), { cache: 'no-store' }); return 'HTTP ' + r.status; }],
+    ['Intermediario', async () => { const r = await conTiempo(PROXY + '?codigo=diag&_=' + Date.now()); return (await r.text()).slice(0, 40); }],
+    ['GitHub API', async () => { const r = await conTiempo('https://api.github.com/zen'); return 'HTTP ' + r.status; }],
+    ['Imagen externa', () => new Promise((ok, ko) => {
+      const i = new Image(); const t = setTimeout(() => ko(new Error('tiempo agotado')), 10000);
+      i.onload = () => { clearTimeout(t); ok('cargada'); }; i.onerror = () => { clearTimeout(t); ko(new Error('error')); };
+      i.src = 'https://www.google.com/favicon.ico?' + Date.now();
+    })]
+  ];
+  for (const [n, f] of pruebas) { lineas.push(await prueba(n, f)); res.textContent = lineas.join('\n'); }
 };
 
 if (!cfg) { $('acceso').style.display = 'block'; } else { pintar(); cargar(); }
