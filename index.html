@@ -185,23 +185,26 @@ const uds = n => n + (n === 1 ? ' unidad' : ' unidades');
 let productos = [], cfg = null, selId = null, editId = null, fotoForm = null, quitarFoto = false, tras = null;
 try { cfg = JSON.parse(localStorage.getItem('compraCfg')); } catch (e) {}
 
-// fetch con límite de tiempo, para que nunca se quede colgado
-async function pedir(url, opciones = {}, segundos = 30) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), segundos * 1000);
-  try {
-    return await fetch(url, { ...opciones, signal: ctrl.signal, redirect: 'follow', cache: 'no-store' });
-  } catch (e) {
-    if (e.name === 'AbortError') throw new Error('El servidor tarda demasiado. Revisa la conexión e inténtalo otra vez.');
-    throw new Error('Sin conexión con el servidor (' + e.message + ')');
-  } finally { clearTimeout(t); }
+// Pide datos al servidor cargándolo como <script> (JSONP): funciona en todos los móviles,
+// sin los bloqueos entre webs que tienen algunos navegadores con fetch.
+let nJsonp = 0;
+function servidor(params, segundos = 30) {
+  return new Promise((resolve, reject) => {
+    const cb = '__cb' + Date.now() + '_' + (nJsonp++);
+    const s = document.createElement('script');
+    const fin = () => { clearTimeout(t); delete window[cb]; s.remove(); };
+    const t = setTimeout(() => { fin(); reject(new Error('El servidor tarda demasiado. Revisa la conexión e inténtalo otra vez.')); }, segundos * 1000);
+    window[cb] = d => { fin(); resolve(d); };
+    s.onerror = () => { fin(); reject(new Error('Sin conexión con el servidor')); };
+    s.src = API_URL + '?' + new URLSearchParams({ ...params, callback: cb, _: Date.now() });
+    document.head.appendChild(s);
+  });
 }
 
 async function cargar() {
   if (!cfg) return;
   try {
-    const r = await pedir(API_URL + '?codigo=' + encodeURIComponent(cfg.codigo));
-    const d = await r.json();
+    const d = await servidor({ codigo: cfg.codigo });
     if (!d.ok) throw new Error(d.error);
     productos = d.productos;
     pintar();
@@ -209,11 +212,27 @@ async function cargar() {
 }
 
 async function enviar(datos, aplicar = true) {
-  const r = await pedir(API_URL, {
-    method: 'POST',
-    body: JSON.stringify({ ...datos, codigo: cfg.codigo, usuario: cfg.nombre })
-  });
-  const d = await r.json();
+  const paquete = { ...datos, codigo: cfg.codigo, usuario: cfg.nombre };
+  let d;
+  if (datos.foto) {
+    // Las fotos no caben en un enlace: se mandan por POST y luego se recarga la lista
+    if (datos.accion === 'nuevo' && productos.some(p => p.nombre.toLowerCase() === datos.nombre.toLowerCase())) {
+      throw new Error('Ya existe un alimento llamado "' + datos.nombre + '"');
+    }
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 60000);
+    try {
+      await fetch(API_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(paquete), signal: ctrl.signal });
+    } catch (e) {
+      throw new Error(e.name === 'AbortError' ? 'La foto tarda demasiado en subir' : 'Sin conexión con el servidor');
+    } finally { clearTimeout(t); }
+    d = await servidor({ codigo: cfg.codigo });
+    if (d.ok && datos.accion === 'nuevo' && !d.productos.some(p => p.nombre.toLowerCase() === datos.nombre.toLowerCase())) {
+      throw new Error('No se pudo guardar el alimento, inténtalo otra vez');
+    }
+  } else {
+    d = await servidor({ datos: JSON.stringify(paquete) });
+  }
   if (!d.ok) throw new Error(d.error);
   if (aplicar) { productos = d.productos; pintar(); }
 }
@@ -267,8 +286,7 @@ let historial = null;
 async function cargarHistorial() {
   if (!historial) $('historial').innerHTML = '<div class="vacio"><div>⏳</div><p>Cargando historial…</p></div>';
   try {
-    const r = await pedir(API_URL + '?accion=historial&codigo=' + encodeURIComponent(cfg.codigo));
-    const d = await r.json();
+    const d = await servidor({ accion: 'historial', codigo: cfg.codigo });
     if (!d.ok) throw new Error(d.error);
     historial = d.historial;
     pintarHistorial();
@@ -540,10 +558,7 @@ $('aEntrar').onclick = async () => {
   btn.disabled = true; btn.textContent = 'Conectando… (puede tardar unos segundos)';
   $('aError').textContent = '';
   try {
-    const r = await pedir(API_URL + '?codigo=' + encodeURIComponent(codigo));
-    const texto = await r.text();
-    let d;
-    try { d = JSON.parse(texto); } catch (e) { throw new Error('Respuesta inesperada del servidor'); }
+    const d = await servidor({ codigo });
     if (!d.ok) throw new Error(d.error === 'Código incorrecto' ? 'Código incorrecto (ojo con mayúsculas y minúsculas)' : d.error);
     cfg = { codigo, nombre };
     try { localStorage.setItem('compraCfg', JSON.stringify(cfg)); } catch (e) {}
