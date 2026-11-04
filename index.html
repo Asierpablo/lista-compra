@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Compra">
 <meta name="theme-color" content="#2e7d4f">
 <title>Lista de la compra</title>
@@ -104,7 +107,7 @@ input[type=text]{width:100%;padding:12px;border-radius:12px;border:1px solid var
   <input type="text" id="aNombre" placeholder="Ej: Asier" autocapitalize="words">
   <button class="btn" id="aEntrar">Entrar</button>
   <p id="aError"></p>
-  <p style="color:var(--gris);font-size:12px;margin-top:30px">Versión 6</p>
+  <p style="color:var(--gris);font-size:12px;margin-top:30px">Versión 7</p>
 </div>
 
 <header>
@@ -211,12 +214,29 @@ async function pedirFetch(params, segundos) {
   } finally { clearTimeout(t); }
 }
 
-// Prueba primero un método y, si falla, el otro
+// Intermediario (Cloudflare): el iPhone en modo app no deja hablar directamente con Google
+const PROXY = 'https://lista-compra.universidadasier.workers.dev';
+
+async function pedirProxy(params, segundos) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), segundos * 1000);
+  try {
+    const r = await fetch(PROXY + '?' + new URLSearchParams({ ...params, _: Date.now() }), { signal: ctrl.signal });
+    return await r.json();
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'P-tiempo' : 'P-' + (e.message || 'error'));
+  } finally { clearTimeout(t); }
+}
+
+// Primero el intermediario; si falla, directo a Google (dos métodos)
 async function servidor(params) {
-  try { return await jsonp(params, 15); }
-  catch (e1) {
-    try { return await pedirFetch(params, 15); }
-    catch (e2) { throw new Error('No se pudo conectar con el servidor [' + e1.message + ' / ' + e2.message + ']'); }
+  try { return await pedirProxy(params, 20); }
+  catch (e0) {
+    try { return await jsonp(params, 15); }
+    catch (e1) {
+      try { return await pedirFetch(params, 15); }
+      catch (e2) { throw new Error('No se pudo conectar con el servidor [' + e0.message + ' / ' + e1.message + ' / ' + e2.message + ']'); }
+    }
   }
 }
 
@@ -238,16 +258,24 @@ async function enviar(datos, aplicar = true) {
     if (datos.accion === 'nuevo' && productos.some(p => p.nombre.toLowerCase() === datos.nombre.toLowerCase())) {
       throw new Error('Ya existe un alimento llamado "' + datos.nombre + '"');
     }
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 60000);
+    const subir = async (url, extra) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 60000);
+      try { return await fetch(url, { method: 'POST', body: JSON.stringify(paquete), signal: ctrl.signal, ...extra }); }
+      finally { clearTimeout(t); }
+    };
     try {
-      await fetch(API_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(paquete), signal: ctrl.signal });
+      // Por el intermediario: se puede leer la respuesta
+      const r = await subir(PROXY, {});
+      d = await r.json();
     } catch (e) {
-      throw new Error(e.name === 'AbortError' ? 'La foto tarda demasiado en subir' : 'Sin conexión con el servidor');
-    } finally { clearTimeout(t); }
-    d = await servidor({ codigo: cfg.codigo });
-    if (d.ok && datos.accion === 'nuevo' && !d.productos.some(p => p.nombre.toLowerCase() === datos.nombre.toLowerCase())) {
-      throw new Error('No se pudo guardar el alimento, inténtalo otra vez');
+      // Si falla, directo a Google sin leer respuesta y luego se recarga
+      try { await subir(API_URL, { mode: 'no-cors' }); }
+      catch (e2) { throw new Error(e2.name === 'AbortError' ? 'La foto tarda demasiado en subir' : 'Sin conexión con el servidor'); }
+      d = await servidor({ codigo: cfg.codigo });
+      if (d.ok && datos.accion === 'nuevo' && !d.productos.some(p => p.nombre.toLowerCase() === datos.nombre.toLowerCase())) {
+        throw new Error('No se pudo guardar el alimento, inténtalo otra vez');
+      }
     }
   } else {
     d = await servidor({ datos: JSON.stringify(paquete) });
@@ -262,8 +290,13 @@ async function operar(datos) {
   catch (e) { toast('⚠️ No se pudo guardar: ' + e.message); cargar(); }
 }
 
+// Las fotos de Drive se cargan a través del intermediario
+function urlFoto(u) {
+  const m = String(u || '').match(/drive\.google\.com\/thumbnail\?id=([A-Za-z0-9_-]+)/);
+  return m ? PROXY + '/foto?id=' + m[1] : u;
+}
 function fotoHtml(p) {
-  return p.foto ? `<img src="${esc(p.foto)}" loading="lazy" alt="">` : `<div class="emo">🍽️</div>`;
+  return p.foto ? `<img src="${esc(urlFoto(p.foto))}" loading="lazy" alt="">` : `<div class="emo">🍽️</div>`;
 }
 function tagTienda(p) {
   return `<span class="tag ${p.tienda === 'Otro' ? 'otro' : ''}">${TIENDAS[p.tienda].icono} ${TIENDAS[p.tienda].nombre}</span>`;
@@ -442,7 +475,7 @@ $('mcMas').onclick = () => { $('mcNum').value = numCant() + 1; botonesCantidad()
 $('mcNum').oninput = botonesCantidad;
 
 function pintarFotoForm(src) {
-  $('maFotoBox').innerHTML = src ? `<img src="${esc(src)}">` : '📷<br>Hacer o elegir foto';
+  $('maFotoBox').innerHTML = src ? `<img src="${esc(urlFoto(src))}">` : '📷<br>Hacer o elegir foto';
   $('maQuitarFoto').hidden = !src;
 }
 
