@@ -106,6 +106,7 @@ input[type=text]{width:100%;padding:12px;border-radius:12px;border:1px solid var
   <input type="text" id="aNombre" placeholder="Ej: Asier" autocapitalize="words">
   <button class="btn" id="aEntrar">Entrar</button>
   <p id="aError"></p>
+  <p style="color:var(--gris);font-size:12px;margin-top:30px">Versión 5</p>
 </div>
 
 <header>
@@ -188,17 +189,37 @@ try { cfg = JSON.parse(localStorage.getItem('compraCfg')); } catch (e) {}
 // Pide datos al servidor cargándolo como <script> (JSONP): funciona en todos los móviles,
 // sin los bloqueos entre webs que tienen algunos navegadores con fetch.
 let nJsonp = 0;
-function servidor(params, segundos = 30) {
+function jsonp(params, segundos) {
   return new Promise((resolve, reject) => {
     const cb = '__cb' + Date.now() + '_' + (nJsonp++);
     const s = document.createElement('script');
     const fin = () => { clearTimeout(t); delete window[cb]; s.remove(); };
-    const t = setTimeout(() => { fin(); reject(new Error('El servidor tarda demasiado. Revisa la conexión e inténtalo otra vez.')); }, segundos * 1000);
+    const t = setTimeout(() => { fin(); reject(new Error('J-tiempo')); }, segundos * 1000);
     window[cb] = d => { fin(); resolve(d); };
-    s.onerror = () => { fin(); reject(new Error('Sin conexión con el servidor')); };
+    s.onerror = () => { fin(); reject(new Error('J-error')); };
     s.src = API_URL + '?' + new URLSearchParams({ ...params, callback: cb, _: Date.now() });
     document.head.appendChild(s);
   });
+}
+
+async function pedirFetch(params, segundos) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), segundos * 1000);
+  try {
+    const r = await fetch(API_URL + '?' + new URLSearchParams({ ...params, _: Date.now() }), { signal: ctrl.signal });
+    return await r.json();
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'F-tiempo' : 'F-' + (e.message || 'error'));
+  } finally { clearTimeout(t); }
+}
+
+// Prueba primero un método y, si falla, el otro
+async function servidor(params) {
+  try { return await jsonp(params, 15); }
+  catch (e1) {
+    try { return await pedirFetch(params, 15); }
+    catch (e2) { throw new Error('No se pudo conectar con el servidor [' + e1.message + ' / ' + e2.message + ']'); }
+  }
 }
 
 async function cargar() {
